@@ -8,7 +8,6 @@ homomorphic combination for tallying.
 """
 
 import hashlib
-import secrets
 from dataclasses import dataclass, field
 from typing import Optional
 from crypto import Ciphertext, combine_many_ciphertexts, p, g
@@ -119,26 +118,34 @@ class BulletinBoard:
         """
         self.registry = registry
     
-    def _generate_receipt(self, voter_id: str) -> str:
+    def _generate_receipt(self, ciphertext: Ciphertext, proof: BallotProof) -> str:
         """
-        Generate a unique receipt for a ballot.
-        
-        The receipt is a hash that allows the voter to verify
-        their ballot was included in the tally.
-        
+        Compute a deterministic receipt tied to ballot contents.
+
+        The receipt is a fingerprint of the posted ciphertext and proof,
+        allowing auditors to detect any post-submission ballot tampering.
+
         Args:
-            voter_id: The voter's ID
-            
+            ciphertext: The ballot ciphertext
+            proof: The ballot validity proof
+
         Returns:
-            Unique receipt string
+            32-hex-character ballot fingerprint
         """
-        # Generate a unique receipt based on voter ID, timestamp, and randomness
-        import time
-        timestamp = str(int(time.time()))
-        random_component = secrets.token_hex(16)
-        data = f"{voter_id}:{timestamp}:{random_component}:{len(self.entries)}"
-        receipt = hashlib.sha256(data.encode()).hexdigest()[:32]
-        return receipt
+        components = [
+            ciphertext.c1,
+            ciphertext.c2,
+            proof.a0_g,
+            proof.a0_y,
+            proof.a1_g,
+            proof.a1_y,
+            proof.e0,
+            proof.e1,
+            proof.z0,
+            proof.z1,
+        ]
+        data = ":".join(str(component) for component in components)
+        return hashlib.sha256(data.encode()).hexdigest()[:32]
     
     def post_ballot(
         self,
@@ -177,8 +184,8 @@ class BulletinBoard:
         if not verify_ballot_proof(ciphertext, proof, self.public_key):
             return False, f"Invalid ZK proof for voter '{voter_id}'", None
         
-        # Generate receipt for individual verifiability
-        receipt = self._generate_receipt(voter_id)
+        # Derive receipt from ballot content so later audits can recompute it.
+        receipt = self._generate_receipt(ciphertext, proof)
         
         # Accept the ballot
         entry = BallotEntry(

@@ -83,10 +83,10 @@ def _hash_to_challenge(*values: int) -> int:
         *values: Integers to hash (commitments, public key, ciphertext, etc.)
         
     Returns:
-        Challenge as an integer modulo (p-1)
+        Challenge as an integer modulo q where q=(p-1)/2
     """
-    # Concatenate all values as bytes
-    data = b""
+    # Domain separation prevents hash collisions across proof contexts.
+    data = b"helios-sim/ballot-proof/v1"
     for v in values:
         # Use variable-length encoding with length prefix
         v_bytes = v.to_bytes((v.bit_length() + 7) // 8, byteorder='big') if v > 0 else b'\x00'
@@ -95,9 +95,10 @@ def _hash_to_challenge(*values: int) -> int:
     # Hash with SHA-256
     hash_bytes = hashlib.sha256(data).digest()
     
-    # Convert to integer and take modulo (p-1)
+    # Convert to integer and reduce modulo subgroup order q.
     challenge = int.from_bytes(hash_bytes, byteorder='big')
-    return challenge % (p - 1)
+    q = (p - 1) // 2
+    return challenge % q
 
 
 def generate_ballot_proof(

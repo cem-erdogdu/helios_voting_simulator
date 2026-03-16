@@ -8,6 +8,7 @@ shares reveal nothing about the secret.
 """
 
 import secrets
+import hashlib
 from dataclasses import dataclass
 from crypto import p, g, Ciphertext
 
@@ -192,6 +193,94 @@ def partial_decrypt(ciphertext: Ciphertext, share: Share, prime: int) -> Partial
     # Compute c1^{share} mod p
     value = pow(ciphertext.c1, share.value, p)
     return PartialDecryption(trustee_index=share.index, value=value)
+
+
+@dataclass(frozen=True)
+class DecryptionProof:
+    """Chaum-Pedersen-style proof of correct partial decryption."""
+
+    commitment: int
+    response: int
+
+    def to_dict(self) -> dict:
+        """Serialize to dictionary for JSON encoding."""
+        return {
+            "commitment": str(self.commitment),
+            "response": str(self.response),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "DecryptionProof":
+        """Deserialize from dictionary."""
+        return cls(
+            commitment=int(d["commitment"]),
+            response=int(d["response"]),
+        )
+
+
+def _hash_decryption_challenge(c1: int, partial_value: int, commitment: int) -> int:
+    """Hash decryption-proof transcript to a challenge in Z_q."""
+    data = b"helios-sim/decryption-proof/v1"
+    for v in (c1, partial_value, commitment):
+        v_bytes = v.to_bytes((v.bit_length() + 7) // 8 or 1, byteorder="big")
+        data += len(v_bytes).to_bytes(4, byteorder="big") + v_bytes
+    digest = hashlib.sha256(data).digest()
+    q = (p - 1) // 2
+    return int.from_bytes(digest, byteorder="big") % q
+
+
+def generate_decryption_proof(ciphertext: Ciphertext, share: Share) -> DecryptionProof:
+    """Generate proof that partial value equals ciphertext.c1^share.value mod p."""
+    q = (p - 1) // 2
+    partial_value = pow(ciphertext.c1, share.value, p)
+
+    w = secrets.randbelow(q)
+    commitment = pow(ciphertext.c1, w, p)
+
+    challenge = _hash_decryption_challenge(ciphertext.c1, partial_value, commitment)
+    response = (w + challenge * share.value) % q
+
+    return DecryptionProof(commitment=commitment, response=response)
+
+
+def verify_decryption_proof(
+    ciphertext: Ciphertext,
+    partial: PartialDecryption,
+    proof: DecryptionProof,
+) -> bool:
+    """Verify proof equation c1^z = commitment * partial^challenge mod p."""
+    challenge = _hash_decryption_challenge(ciphertext.c1, partial.value, proof.commitment)
+    lhs = pow(ciphertext.c1, proof.response, p)
+    rhs = (proof.commitment * pow(partial.value, challenge, p)) % p
+    return lhs == rhs
+
+
+def partial_decrypt_with_proof(
+    ciphertext: Ciphertext,
+    share: Share,
+    prime: int,
+) -> tuple[PartialDecryption, DecryptionProof]:
+    """Produce partial decryption together with its verifiable proof."""
+    partial = partial_decrypt(ciphertext, share, prime)
+    proof = generate_decryption_proof(ciphertext, share)
+    return partial, proof
+
+
+def combine_partial_decryptions_with_proofs(
+    ciphertext: Ciphertext,
+    partials: list[PartialDecryption],
+    proofs: list[DecryptionProof],
+    prime: int,
+) -> int:
+    """Combine partial decryptions only after validating all proofs."""
+    if len(partials) != len(proofs):
+        raise ValueError("Partials and proofs must be the same length")
+
+    for partial, proof in zip(partials, proofs):
+        if not verify_decryption_proof(ciphertext, partial, proof):
+            raise ValueError(f"Invalid decryption proof from trustee {partial.trustee_index}")
+
+    return combine_partial_decryptions(ciphertext, partials, prime)
 
 
 def combine_partial_decryptions(
